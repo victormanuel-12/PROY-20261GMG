@@ -1,0 +1,384 @@
+name: Full Security Report - .NET
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 2 * * 1'   # Cada lunes a las 2am
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+
+  # ══════════════════════════════════════════════════════
+  # 1. SECRETOS Y CREDENCIALES EXPUESTAS
+  # ══════════════════════════════════════════════════════
+  secret-scanning:
+    runs-on: ubuntu-latest
+    name: 🔑 Secret Scanning (TruffleHog)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog - Buscar secretos expuestos
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'HEAD~1' }}
+          head: HEAD
+          extra_args: --only-verified
+        continue-on-error: true
+
+  # ══════════════════════════════════════════════════════
+  # 2. VULNERABILIDADES EN DEPENDENCIAS NUGET
+  # ══════════════════════════════════════════════════════
+  nuget-vulnerabilities:
+    runs-on: ubuntu-latest
+    name: 📦 NuGet Dependency Vulnerabilities
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Auditar vulnerabilidades en NuGet
+        run: |
+          echo "## 📦 NuGet Vulnerability Report" > nuget-report.txt
+          echo "**Fecha:** $(date)" >> nuget-report.txt
+          echo "" >> nuget-report.txt
+          echo "### Paquetes Vulnerables" >> nuget-report.txt
+          dotnet list package --vulnerable --include-transitive 2>&1 >> nuget-report.txt || true
+          echo "" >> nuget-report.txt
+          echo "### Paquetes Desactualizados" >> nuget-report.txt
+          dotnet list package --outdated 2>&1 >> nuget-report.txt || true
+          echo "" >> nuget-report.txt
+          echo "### Paquetes Deprecados" >> nuget-report.txt
+          dotnet list package --deprecated 2>&1 >> nuget-report.txt || true
+          cat nuget-report.txt
+
+      - name: Upload NuGet Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-vulnerability-report
+          path: nuget-report.txt
+          retention-days: 30
+        if: always()
+
+  # ══════════════════════════════════════════════════════
+  # 3. ANÁLISIS ESTÁTICO DE CÓDIGO (SAST) - CODEQL
+  # ══════════════════════════════════════════════════════
+  codeql-sast:
+    runs-on: ubuntu-latest
+    name: 🔬 SAST - CodeQL Security Analysis
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          queries: security-and-quality
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: '/language:csharp'
+          output: codeql-results
+
+      - name: Upload CodeQL SARIF
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif-report
+          path: codeql-results/
+          retention-days: 30
+        if: always()
+
+  # ══════════════════════════════════════════════════════
+  # 4. ANÁLISIS ESTÁTICO - SECURITY CODE SCAN
+  # ══════════════════════════════════════════════════════
+  security-code-scan:
+    runs-on: ubuntu-latest
+    name: 🛡️ SAST - Security Code Scan (OWASP Rules)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Instalar Security Code Scan
+        run: |
+          dotnet tool install --global security-scan --ignore-failed-sources || true
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Ejecutar Security Code Scan (OWASP)
+        run: |
+          echo "## 🛡️ Security Code Scan - OWASP Top 10 Rules" > scs-report.txt
+          echo "**Fecha:** $(date)" >> scs-report.txt
+          echo "" >> scs-report.txt
+          # Analizar con Roslyn analyzers de seguridad
+          dotnet build --no-restore \
+            /p:EnableNETAnalyzers=true \
+            /p:AnalysisMode=Security \
+            /p:TreatWarningsAsErrors=false \
+            2>&1 | grep -E "(warning|error) (CA|SA|SEC|SCS)" >> scs-report.txt || true
+          cat scs-report.txt
+        continue-on-error: true
+
+      - name: Upload Security Code Scan Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-code-scan-report
+          path: scs-report.txt
+          retention-days: 30
+        if: always()
+
+  # ══════════════════════════════════════════════════════
+  # 5. ANÁLISIS DE COMPOSICIÓN DE SOFTWARE (SCA) - OWASP DC
+  # ══════════════════════════════════════════════════════
+  owasp-dependency-check:
+    runs-on: ubuntu-latest
+    name: 🧩 SCA - OWASP Dependency Check
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Setup Java (necesario para OWASP DC)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'SGMG-NET'
+          path: '.'
+          format: 'ALL'   # HTML + JSON + XML + SARIF
+          args: >
+            --enableRetired
+            --enableExperimental
+            --failOnCVSS 7
+        continue-on-error: true
+
+      - name: Upload OWASP DC Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-reports
+          path: reports/
+          retention-days: 30
+        if: always()
+
+  # ══════════════════════════════════════════════════════
+  # 6. CALIDAD DE CÓDIGO - DOTNET FORMAT + ANALYZERS
+  # ══════════════════════════════════════════════════════
+  code-quality:
+    runs-on: ubuntu-latest
+    name: 📐 Code Quality & Analyzers
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Verificar formato de código (solo analyzers, sin whitespace)
+        run: dotnet format analyzers --verify-no-changes --severity warn
+        continue-on-error: true
+
+      - name: Build con todos los analyzers activados
+        run: |
+          echo "## 📐 Code Quality Report" > quality-report.txt
+          echo "**Fecha:** $(date)" >> quality-report.txt
+          echo "" >> quality-report.txt
+          dotnet build --no-restore \
+            /p:EnableNETAnalyzers=true \
+            /p:AnalysisLevel=latest \
+            /p:TreatWarningsAsErrors=false \
+            /warnaserror- \
+            2>&1 | grep -E "(warning|error) (CA|IDE|CS)" >> quality-report.txt || true
+          cat quality-report.txt
+        continue-on-error: true
+
+      - name: Upload Quality Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-quality-report
+          path: quality-report.txt
+          retention-days: 30
+        if: always()
+
+  # ══════════════════════════════════════════════════════
+  # 7. SONARCLOUD - REPORTE CENTRALIZADO COMPLETO
+  # ══════════════════════════════════════════════════════
+  sonarcloud:
+    runs-on: ubuntu-latest
+    name: ☁️ SonarCloud - Full Analysis
+    needs: [nuget-vulnerabilities, code-quality]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Instalar SonarScanner
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Instalar dotnet-coverage
+        run: dotnet tool install --global dotnet-coverage
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Begin SonarCloud Scan
+        run: |
+          dotnet sonarscanner begin \
+            /k:"TALLER-PROYECTOS-2026-I_NANUTECH-BACKEND" \
+            /o:"prueba-demo-devsecops" \
+            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.branch.name="${{ github.head_ref || github.ref_name }}" \
+            /d:sonar.cs.vscoveragexml.reportsPaths=coverage.xml \
+            /d:sonar.exclusions="**/Migrations/**,**/*.Designer.cs,**/wwwroot/**" \
+            /d:sonar.coverage.exclusions="**/Program.cs,**/Migrations/**" \
+            /d:sonar.qualitygate.wait=true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Tests con cobertura
+        run: |
+          dotnet-coverage collect \
+            "dotnet test --no-build --configuration Release" \
+            -f xml -o coverage.xml
+        continue-on-error: true
+
+      - name: End SonarCloud Scan
+        run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ══════════════════════════════════════════════════════
+  # 8. REPORTE CONSOLIDADO FINAL
+  # ══════════════════════════════════════════════════════
+  consolidated-report:
+    runs-on: ubuntu-latest
+    name: 📊 Consolidated Security Report
+    needs:
+      - secret-scanning
+      - nuget-vulnerabilities
+      - codeql-sast
+      - security-code-scan
+      - owasp-dependency-check
+      - code-quality
+      - sonarcloud
+    if: always()
+    steps:
+      - name: Descargar todos los reportes
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports/
+
+      - name: Generar reporte consolidado
+        run: |
+          echo "# 🛡️ Security Report Consolidado" > final-report.md
+          echo "**Proyecto:** NANUTECH Backend (.NET)" >> final-report.md
+          echo "**Rama:** ${{ github.ref_name }}" >> final-report.md
+          echo "**Fecha:** $(date)" >> final-report.md
+          echo "**Commit:** ${{ github.sha }}" >> final-report.md
+          echo "" >> final-report.md
+
+          echo "## 📋 Resumen de Jobs" >> final-report.md
+          echo "| Análisis | Estado |" >> final-report.md
+          echo "|---|---|" >> final-report.md
+          echo "| 🔑 Secret Scanning | ${{ needs.secret-scanning.result }} |" >> final-report.md
+          echo "| 📦 NuGet Vulnerabilities | ${{ needs.nuget-vulnerabilities.result }} |" >> final-report.md
+          echo "| 🔬 CodeQL SAST | ${{ needs.codeql-sast.result }} |" >> final-report.md
+          echo "| 🛡️ Security Code Scan | ${{ needs.security-code-scan.result }} |" >> final-report.md
+          echo "| 🧩 OWASP Dependency Check | ${{ needs.owasp-dependency-check.result }} |" >> final-report.md
+          echo "| 📐 Code Quality | ${{ needs.code-quality.result }} |" >> final-report.md
+          echo "| ☁️ SonarCloud | ${{ needs.sonarcloud.result }} |" >> final-report.md
+          echo "" >> final-report.md
+
+          echo "## 📂 Reportes Generados" >> final-report.md
+          echo "- nuget-vulnerability-report (paquetes vulnerables, desactualizados y deprecados)" >> final-report.md
+          echo "- codeql-sarif-report (análisis SAST en formato SARIF)" >> final-report.md
+          echo "- security-code-scan-report (reglas OWASP Top 10)" >> final-report.md
+          echo "- owasp-dependency-check-reports (HTML + JSON + XML + SARIF)" >> final-report.md
+          echo "- code-quality-report (analyzers de Roslyn)" >> final-report.md
+          echo "" >> final-report.md
+
+          echo "## 🔗 Links" >> final-report.md
+          echo "- SonarCloud: https://sonarcloud.io/project/overview?id=TALLER-PROYECTOS-2026-I_NANUTECH-BACKEND" >> final-report.md
+          echo "- GitHub Security: https://github.com/${{ github.repository }}/security" >> final-report.md
+
+          cat final-report.md
+
+      - name: Upload Consolidated Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: 📊-consolidated-security-report
+          path: |
+            final-report.md
+            all-reports/
+          retention-days: 30
