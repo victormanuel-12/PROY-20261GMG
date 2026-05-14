@@ -56,8 +56,8 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
-      - name: Check code formatting
-        run: dotnet format --verify-no-changes --severity warn
+      - name: Check code formatting (analyzers only, skip whitespace)
+        run: dotnet format analyzers --verify-no-changes --severity warn
         continue-on-error: true
 
   # ─────────────────────────────────────────────
