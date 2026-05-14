@@ -39,7 +39,7 @@ namespace SGMG.Controllers
     }
 
 
-    //Obtener todas las citas pendientes (sin filtros)
+    //Obtener todas las c
     [HttpGet]
     [Route("/citas/pendientes")]
     public async Task<GenericResponse<IEnumerable<CitaResponseDTO>>> GetCitasPendientes()
