@@ -1,0 +1,184 @@
+name: Backend Security Scan - Nanutech
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - develop
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  # 1. Escaneo de secretos con TruffleHog
+  # ─────────────────────────────────────────────
+  secret-scanning:
+    runs-on: ubuntu-latest
+    name: Secret Scanning
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # 2. Análisis de estilo y calidad con Roslyn / dotnet format
+  # ─────────────────────────────────────────────
+  dotnet-format-check:
+    runs-on: ubuntu-latest
+    name: .NET Code Quality (dotnet format)
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Check code formatting
+        run: dotnet format --verify-no-changes --severity warn
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # 3. Análisis de seguridad con CodeQL (C#)
+  # ─────────────────────────────────────────────
+  codeql-analysis:
+    runs-on: ubuntu-latest
+    name: CodeQL Security Analysis
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          queries: security-and-quality
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build project
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:csharp'
+
+  # ─────────────────────────────────────────────
+  # 4. Vulnerabilidades en dependencias NuGet
+  # ─────────────────────────────────────────────
+  dependency-check:
+    runs-on: ubuntu-latest
+    name: Dependency Vulnerabilities
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Audit NuGet vulnerabilities
+        run: dotnet list package --vulnerable --include-transitive 2>&1 | tee vuln-report.txt || true
+
+      - name: Check outdated packages
+        run: dotnet list package --outdated || true
+
+      - name: Upload vulnerability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-vulnerability-report
+          path: vuln-report.txt
+        if: always()
+
+  # ─────────────────────────────────────────────
+  # 5. SonarCloud Analysis (.NET)
+  # ─────────────────────────────────────────────
+  sonarcloud-scan:
+    runs-on: ubuntu-latest
+    name: SonarCloud Analysis
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # necesario para blame info de Sonar
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install SonarScanner for .NET
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Install dotnet-coverage
+        run: dotnet tool install --global dotnet-coverage
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Begin SonarCloud Scan
+        run: |
+          dotnet sonarscanner begin \
+            /k:"TALLER-PROYECTOS-2026-I_NANUTECH-BACKEND" \
+            /o:"prueba-demo-devsecops" \
+            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.cs.vscoveragexml.reportsPaths=coverage.xml \
+            /d:sonar.exclusions="**/Migrations/**,**/*.Designer.cs,**/wwwroot/**" \
+            /d:sonar.coverage.exclusions="**/Program.cs,**/Migrations/**"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Build project
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Run tests with coverage
+        run: |
+          dotnet-coverage collect \
+            "dotnet test --no-build --configuration Release" \
+            -f xml -o coverage.xml
+        continue-on-error: true
+
+      - name: End SonarCloud Scan
+        run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
