@@ -156,8 +156,8 @@ jobs:
       - name: Begin SonarCloud Scan
         run: |
           dotnet sonarscanner begin \
-            /k:"TALLER-PROYECTOS-2026-I_NANUTECH-BACKEND" \
-            /o:"prueba-demo-devsecops" \
+            /k:"PROY-20261GMG" \
+            /o:"victor-manuelt" \
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.branch.name="${{ github.head_ref || github.ref_name }}" \
