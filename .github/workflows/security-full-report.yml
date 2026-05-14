@@ -289,15 +289,15 @@ jobs:
       - name: Begin SonarCloud Scan
         run: |
           dotnet sonarscanner begin \
-            /k:"TALLER-PROYECTOS-2026-I_NANUTECH-BACKEND" \
-            /o:"prueba-demo-devsecops" \
+            /k:"PROY-20261GMG" \
+            /o:"victor-manuelt" \
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.branch.name="${{ github.head_ref || github.ref_name }}" \
             /d:sonar.cs.vscoveragexml.reportsPaths=coverage.xml \
             /d:sonar.exclusions="**/Migrations/**,**/*.Designer.cs,**/wwwroot/**" \
             /d:sonar.coverage.exclusions="**/Program.cs,**/Migrations/**" \
-            /d:sonar.qualitygate.wait=true
+            
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -369,7 +369,7 @@ jobs:
           echo "" >> final-report.md
 
           echo "## 🔗 Links" >> final-report.md
-          echo "- SonarCloud: https://sonarcloud.io/project/overview?id=TALLER-PROYECTOS-2026-I_NANUTECH-BACKEND" >> final-report.md
+          echo "- SonarCloud: https://sonarcloud.io/project/overview?id=PROY-20261GMG" >> final-report.md
           echo "- GitHub Security: https://github.com/${{ github.repository }}/security" >> final-report.md
 
           cat final-report.md
